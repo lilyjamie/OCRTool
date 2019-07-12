@@ -1,0 +1,1 @@
+from .OCRView import OCREditTool
