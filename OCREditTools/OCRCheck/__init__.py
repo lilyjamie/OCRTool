@@ -1,2 +1,1 @@
-from .ocr import *
-from .PictureAutoGetPoint import *
+from .ocrCheck import OCRCheck

@@ -1,27 +1,43 @@
 from tkinter.filedialog import *
 from tkinter import messagebox
 from collections import OrderedDict
+import tkinter as tk
 import json
 
 from OCREditTools.View.OCRView import OCREditTool
 from OCREditTools.Func.FiledictObserver import *
 from OCREditTools.Func.NewEditCPWindow import NewWindow
 from OCREditTools.Func.NewAutoPointWindow import CaptureWindow
-from OCREditTools.OCRCheck.PictureAutoGetPoint import PictureGetPoint
-from OCREditTools.OCRCheck.ocr import *
+from OCREditTools.PicturePoint.GetCameraPicture import CameraPicture
+from OCREditTools.PicturePoint.GetPoint import DrawPoint
+from OCREditTools.Func.PicturePathObserver import PicturePathObserver
+from TVHybridTestLibrary.drivers.usbcapturehdmi import VideoCaptureBase
+from OCREditTools.OCRCheck.ocrCheck import OCRCheck
 
 
 class Control:
     def __init__(self, win):
         self.win = win
         self.origin_file_dict = {}
+        # text_compare_method
+        self.text_compare_method = ("br2auto-sp", "br2sp", "no-br", "no-sp", "substr", "regular")
+        # text_compare_method 冲突表
+        self.conflict_table = [["substr", "regular"]]
+        # 保存select_index
+        self.select_method_index = []
+
+        # 默认输入照相机端口的输入值
         self.camera_port = 999
         # 创建观察者
         self.file_watch = File({})
+        self.picture_path_watch = PicturePathObserver("")
         self.ocr = OCREditTool(self.win)
+        self.frame = VideoCaptureBase.instance(0)
+        self.picture_path_watch.attach(self.frame)
         self.picture_path = ""
-        # 添加被观察者
+        # 添加文件字典被观察者
         self.file_watch.attach(self.ocr)
+        self.filter_combobox_get_value()
         self.ocr.open_button.bind("<Button-1>", self.open)
         self.ocr.add_button.bind("<Button-1>", self.add)
         self.ocr.rename_button.bind("<Button-1>", self.rename)
@@ -29,11 +45,20 @@ class Control:
         self.ocr.key_cp.bind("<<ListboxSelect>>", self.send_cp_value_to_edit_event)
         self.ocr.save_button.bind("<Button-1>", self.save_edit)
         self.ocr.camera_picture_button.bind("<Button-1>", self.auto_camera_capture_point)
-        self.ocr.re_choose_camera_button.config(state=DISABLED)
         self.ocr.re_choose_camera_button.bind("<Button-1>", self.reinput_auto_camera_capture)
         self.ocr.choose_picture_button.bind("<Button-1>", self.choose_picture_get_point)
         self.ocr.check_button.bind("<Button-1>", self.ocr_check)
+        self.ocr.text_cmp_method_listbox.bind("<<ListboxSelect>>", self.judge_conflict)
         self.win.mainloop()
+
+    def filter_combobox_get_value(self):
+        self.filter_index = OrderedDict()
+        self.filter_index["auto"] = 0
+        self.filter_index["gray"] = 1
+        self.filter_index["binary"] = 2
+        self.filter_index["binary-inv"] = 3
+        self.filter_index[""] = 4
+        self.ocr.filter_combox["values"] = tuple(self.filter_index.keys())
 
     def open(self, events):
         ''' 打开文件
@@ -71,7 +96,6 @@ class Control:
 
     def handle_add_window_return(self, event):
         self.checkpoint_name = self.add_window.str
-        # print(self.checkpoint_name)
         # 如果返回checkpoint name,则新增checkpoint
         if self.checkpoint_name:
             if self.checkpoint_name in self.file_watch.file_dict.keys():
@@ -79,8 +103,7 @@ class Control:
             else:
                 value = {
                     "x1y1_x2y2": [20, 50, 280, 130],
-                    "img_filter": "binary-inv",
-                    "config": "--psm 7"}
+                    }
                 self.file_watch.add(self.checkpoint_name, value)
                 self.save()
                 self.listbox_select_end()
@@ -119,6 +142,7 @@ class Control:
             origin_checkpoint = self.ocr.key_list[cur_index]
             self.file_watch.delete(origin_checkpoint)
             self.save()
+            self.clear_widget()
         else:
             messagebox.showerror("error", "no select item")
 
@@ -136,7 +160,8 @@ class Control:
     def clear_widget(self):
         self.ocr.point_entry.delete(0, END)
         self.ocr.target_text.delete("1.0", END)
-        self.ocr.filter_combox.delete(0, END)
+        # 选择为空项
+        self.ocr.filter_combox.current(4)
         self.ocr.count_entry.delete(0, END)
         self.ocr.lang_entry.delete(0, END)
         self.ocr.nice_entry.delete(0, END)
@@ -151,12 +176,19 @@ class Control:
 
     # 获取值
     def edit_frame_widget_get_origin_value(self, file_dict, cur_cp_name):
+        text_compare_method_value = tk.StringVar()
+        text_compare_method_value.set(self.text_compare_method)
+        index = 0
+        cmp_method_index = {}
+        for text_method in self.text_compare_method:
+            cmp_method_index[text_method] = index
+            index += 1
+        self.ocr.text_cmp_method_listbox.config(listvariable=text_compare_method_value)
         self.clear_widget()
         self.file_dict = file_dict
         self.cur_cp_name = cur_cp_name
         self.origin_cp_value_dict = {}
         self.origin_cp_value_dict = self.file_dict[cur_cp_name]
-        filter_index = {"auto": 0, "gray": 1, "binary": 2, "binary-inv": 3}
 
         for key in self.origin_cp_value_dict:
             if key == "x1y1_x2y2":
@@ -165,7 +197,7 @@ class Control:
                 self.ocr.target_text.insert("1.0", self.origin_cp_value_dict[key])
             elif key == "img_filter":
                 img_filter = self.origin_cp_value_dict[key]
-                self.ocr.filter_combox.current(filter_index[img_filter])
+                self.ocr.filter_combox.current(self.filter_index[img_filter])
             elif key == "max_check_count":
                 self.ocr.count_entry.insert(0, self.origin_cp_value_dict[key])
             elif key == "lang":
@@ -175,13 +207,12 @@ class Control:
             elif key == "text_compare_method":
                 text_method = re.split("\|", self.origin_cp_value_dict[key])
                 for method in text_method:
-                    self.ocr.text_cmp_method_listbox.select_set(self.ocr.cmp_method_index[method])
+                    self.ocr.text_cmp_method_listbox.select_set(cmp_method_index[method])
             elif key == "inherit":
                 self.ocr.inherit_entry.insert(0, self.origin_cp_value_dict[key])
             elif key == "config":
                 config = self.origin_cp_value_dict[key].strip()
-                new_config = int(config[-2:])
-                self.ocr.config_box.current(int(new_config))
+                self.ocr.config_box.insert(0, config)
             else:
                 messagebox.showerror("key error", key + " no exist")
 
@@ -196,28 +227,47 @@ class Control:
         if self.ocr.filter_combox.get():
             self.cp_value_dict["img_filter"] = self.ocr.filter_combox.get()
         if self.ocr.count_entry.get():
-            self.cp_value_dict["max_check_count"] = self.ocr.count_entry.get()
+            self.cp_value_dict["max_check_count"] = int(self.ocr.count_entry.get())
         if self.ocr.lang_entry.get():
             self.cp_value_dict["lang"] = self.ocr.lang_entry.get()
         if self.ocr.nice_entry.get():
             self.cp_value_dict["nice"] = self.ocr.nice_entry.get()
         if self.ocr.config_box.get():
-            self.cp_value_dict["config"] = "--psm " + str(self.ocr.config_box.get())
+            self.cp_value_dict["config"] = self.ocr.config_box.get()
 
         method_indexs = self.ocr.text_cmp_method_listbox.curselection()
         str_temp = ""
-        cmp_method_index = {0: "br2auto-sp", 1: "br2sp", 2: "no-br", 3: "no-sp", 4: "substr", 5: "regular"}
         if method_indexs:
-            for i in range(len(method_indexs)):
+            for i in method_indexs:
                 if i == len(method_indexs) - 1:
-                    str_temp = str_temp + cmp_method_index[method_indexs[i]]
+                    str_temp = str_temp + self.ocr.text_cmp_method_listbox.get(i)
                 else:
-                    str_temp = str_temp + cmp_method_index[method_indexs[i]] + "|"
+                    str_temp = str_temp + self.ocr.text_cmp_method_listbox.get(i) + "|"
 
             self.cp_value_dict["text_compare_method"] = str_temp
 
         if self.ocr.inherit_entry.get():
             self.cp_value_dict["inherit"] = self.ocr.inherit_entry.get()
+
+    def judge_conflict(self, event):
+        if not self.select_method_index:
+            select_indexs = self.ocr.text_cmp_method_listbox.curselection()
+            self.select_method_index = list(select_indexs)
+        else:
+            select_indexs = self.ocr.text_cmp_method_listbox.curselection()
+            # 求出不同的那一项
+            diff_list = list(set(select_indexs).difference(set(self.select_method_index)))
+            self.select_method_index = list(select_indexs)
+
+        select_values = [None]*len(self.text_compare_method)
+        if select_indexs:
+            for index in select_indexs:
+                select_values.append(self.ocr.text_cmp_method_listbox.get(index))
+            for i in range(len(self.conflict_table)):
+                if self.conflict_table[i][0] in select_values and self.conflict_table[i][1] in select_values:
+                    messagebox.showerror("error", "conflict with previous method")
+                    self.ocr.text_cmp_method_listbox.select_clear(diff_list[0])
+                    break
 
     def save_edit(self, events):
         ret = self.control_button_click()
@@ -259,14 +309,18 @@ class Control:
             if self.camera_port == 999:
                 self.new_camera_window()
             else:
-                self.get_point(self.camera_port)
+                self.camera_get_point(self.camera_port)
         else:
             messagebox.showerror("error", "no select checkpoint")
 
     def reinput_auto_camera_capture(self, events):
         ret = self.control_button_click()
         if ret:
-            self.new_camera_window()
+            if self.ocr.re_choose_camera_button.instate(['!disabled']):
+                self.new_camera_window()
+            else:
+                messagebox.showinfo("info", "this is a button to reinput camera port, "
+                                            "please press Cam button first")
         else:
             messagebox.showerror("error", "no select checkpoint")
 
@@ -276,12 +330,12 @@ class Control:
         if self.edit_point.port == 999:
             pass
         else:
-            self.ocr.re_choose_camera_button.config(state=NORMAL)
-            self.get_point(self.edit_point.port)
+            self.ocr.re_choose_camera_button.state(['!disabled'])
+            self.camera_get_point(self.edit_point.port)
 
     def choose_picture_get_point(self, events):
         """choose_picture_get_point.
-        打开图片，并生成opencv窗口，获取图片坐标.
+        打开图片，获取图片坐标.
         """
         ret = self.control_button_click()
         if ret:
@@ -290,47 +344,44 @@ class Control:
             file_obj = askopenfile(filetypes=file_types)
             if file_obj:
                 self.picture_path = file_obj.name
-                self.get_point(self.picture_path)
+                self.picture_path_watch.picture_path = self.picture_path
+                DrawPoint(self.ocr.picture_canvas, self.ocr.point_entry, self.picture_path)
         else:
             messagebox.showerror("error", "no select checkpoint")
 
-    def get_point(self, picture_path):
-        pic = PictureGetPoint(picture_path)
-        pic.show()
-        # 将picture point 输入到输入框
-        if pic.point_list:
-            print(pic.point_list)
-            self.ocr.point_entry.delete(0, END)
-            self.ocr.point_entry.insert(0, str(pic.point_list[0]))
+    # 获取图片坐标
+    def camera_get_point(self, picture_path):
+        camera = CameraPicture(picture_path)
+        self.picture_path = camera.get_camera()
+        if self.picture_path:
+            self.picture_path_watch.picture_path = self.picture_path
+            DrawPoint(self.ocr.picture_canvas, self.ocr.point_entry, self.picture_path)
+        else:
+            choose = messagebox.askokcancel("choose", "camera port no exist, reinput or not?")
+            if choose:
+                self.new_camera_window()
 
     def ocr_check(self, events):
         ret = self.control_button_click()
-        load_pictur_flag = self.check_button_click_state()
+        load_picture_flag = self.check_button_click_state()
         if ret:
-            if load_pictur_flag:
+            if load_picture_flag:
                 self.ocr.check_text.delete("1.0", END)
                 self.ocr.check_text.configure(background="white")
                 self.new_edit_cp_dict()
-                print("ocr_check")
                 if self.picture_path:
-                    self.ocr_compare(self.picture_path)
-                else:
                     self.ocr_compare()
             else:
                 messagebox.showerror("error", "no capture or choose picture")
         else:
             messagebox.showerror("error", "no select checkpoint")
 
-    def ocr_compare(self, picture_path="pic.jpg"):
-        if picture_path == "pic.jpg":
-            ocr_check = OCR()
-        else:
-            ocr_check = OCR(picture_path)
-        ocr_check.ocr_load_checkpoint_config(self.choose_checkpoint, self.cp_value_dict)
+    def ocr_compare(self):
+        ocr_check = OCRCheck()
+        ocr_check.create_checkpoint(self.choose_checkpoint, self.cp_value_dict)
         ret, ratio = ocr_check.ocr_checkpoint(self.choose_checkpoint)
-        if hasattr(ocr_check, 'return_str'):
-            self.ocr.check_text.delete("1.0", END)
-            self.ocr.check_text.insert("1.0", ocr_check.return_str)
+        self.ocr.check_text.delete("1.0", END)
+        self.ocr.check_text.insert("1.0", ocr_check.ocr_checkpoint_text(self.choose_checkpoint))
         if ret:
             self.ocr.check_text.configure(background="green")
         else:
@@ -348,10 +399,4 @@ class Control:
             return True
         else:
             return False
-
-
-if __name__ == "__main__":
-    win = Tk()
-    Control(win)
-
 
